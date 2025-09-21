@@ -1,61 +1,61 @@
 {
-    "name":  "allez-orm",
-    "version":  "1.0.0",
-    "description":  "AllezORM: lightweight browser SQLite ORM (sql.js) + schema generator CLI",
-    "type":  "module",
-    "main":  "./allez-orm.mjs",
-    "module":  "./allez-orm.mjs",
-    "browser":  "./allez-orm.mjs",
-    "exports":  {
-                    ".":  {
-                              "import":  "./allez-orm.mjs"
-                          },
-                    "./cli":  "./tools/allez-orm.mjs"
-                },
-    "sideEffects":  false,
-    "scripts":  {
-                    "dev":  "node dev-server.mjs",
-                    "dev:static":  "serve -l 5173",
-                    "allez":  "node tools/allez-orm.mjs",
-                    "test:cli":  "node tests/test-cli.mjs",
-                    "ddl:audit":  "node tools/ddl-audit.mjs",
-                    "prepublishOnly":  "node tests/test-cli.mjs \u0026\u0026 node tools/ddl-audit.mjs"
-                },
-    "bin":  {
-                "allez-orm":  "tools/allez-orm.mjs"
-            },
-    "files":  [
-                  "allez-orm.mjs",
-                  "tools/allez-orm.mjs",
-                  "tools/ddl-audit.mjs",
-                  "package.json",
-                  "README.md"
-              ],
-    "keywords":  [
-                     "sqlite",
-                     "orm",
-                     "schema",
-                     "cli",
-                     "browser",
-                     "sql.js"
-                 ],
-    "repository":  {
-                       "type":  "git",
-                       "url":  "git+https://github.com/AllezMarketing/allez-orm.git"
-                   },
-    "bugs":  {
-                 "url":  "https://github.com/AllezMarketing/allez-orm/issues"
-             },
-    "homepage":  "https://github.com/AllezMarketing/allez-orm#readme",
-    "license":  "ISC",
-    "author":  "Allez Marketing LLC",
-    "devDependencies":  {
-                            "serve":  "^14.2.5"
-                        },
-    "engines":  {
-                    "node":  "\u003e=18"
-                },
-    "publishConfig":  {
-                          "access":  "public"
-                      }
+    "name": "allez-orm",
+    "version": "1.0.1",
+    "description": "AllezORM: lightweight browser SQLite ORM (sql.js) + schema generator CLI",
+    "type": "module",
+    "main": "./allez-orm.mjs",
+    "module": "./allez-orm.mjs",
+    "browser": "./allez-orm.mjs",
+    "exports": {
+        ".": {
+            "import": "./allez-orm.mjs"
+        },
+        "./cli": "./tools/allez-orm.mjs"
+    },
+    "sideEffects": false,
+    "scripts": {
+        "dev": "node dev-server.mjs",
+        "dev:static": "serve -l 5173",
+        "allez": "node tools/allez-orm.mjs",
+        "test:cli": "node tests/test-cli.mjs",
+        "ddl:audit": "node tools/ddl-audit.mjs",
+        "prepublishOnly": "node tests/test-cli.mjs && node tools/ddl-audit.mjs"
+    },
+    "bin": {
+        "allez-orm": "tools/allez-orm.mjs"
+    },
+    "files": [
+        "allez-orm.mjs",
+        "tools/allez-orm.mjs",
+        "tools/ddl-audit.mjs",
+        "package.json",
+        "README.md"
+    ],
+    "keywords": [
+        "sqlite",
+        "orm",
+        "schema",
+        "cli",
+        "browser",
+        "sql.js"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/AllezMarketing/allez-orm.git"
+    },
+    "bugs": {
+        "url": "https://github.com/AllezMarketing/allez-orm/issues"
+    },
+    "homepage": "https://github.com/AllezMarketing/allez-orm#readme",
+    "license": "ISC",
+    "author": "Allez Marketing LLC",
+    "devDependencies": {
+        "serve": "^14.2.5"
+    },
+    "engines": {
+        "node": ">=18"
+    },
+    "publishConfig": {
+        "access": "public"
+    }
 }
