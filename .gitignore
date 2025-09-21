@@ -1,0 +1,51 @@
+﻿# --- Node & tooling ---
+node_modules/
+.npm/
+.npmrc
+.pnp.*
+coverage/
+.nyc_output/
+dist/
+build/
+.tmp/
+.temp/
+.cache/
+.eslintcache
+.stylelintcache
+*.log
+
+# --- Editor/OS ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# --- Local secrets / keys (project-scoped SSH) ---
+git-ssh/
+*.pem
+*.key
+*.crt
+.env
+.env.*
+
+# --- SQLite / browser DB artifacts ---
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+
+# --- Generated schemas (products of the generator/Studio) ---
+schemas/**
+!schemas/README.md
+
+schemas_cli/**
+!schemas_cli/README.md
+
+# Ignore local helper scripts
+*.ps1
+
+# repo hygiene
+allez-orm.git/
+*known_hosts*
