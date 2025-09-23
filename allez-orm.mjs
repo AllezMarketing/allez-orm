@@ -68,7 +68,7 @@ export class AllezORM {
                 locateFile: opts.wasmLocateFile ?? (f => `https://sql.js.org/dist/${f}`)
             });
         } else {
-            const { default: initSqlJs } = await import("sql.js");
+            const { default: initSqlJs } = await import("sql.js/dist/sql-wasm.js");
             SQL = await initSqlJs({
                 locateFile: opts.wasmLocateFile ?? (f => `https://sql.js.org/dist/${f}`)
             });
