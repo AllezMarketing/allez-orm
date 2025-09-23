@@ -1,6 +1,6 @@
 {
   "name": "allez-orm",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "AllezORM: lightweight browser SQLite ORM (sql.js) + schema generator CLI",
   "type": "module",
   "main": "./allez-orm.mjs",
