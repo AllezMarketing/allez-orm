@@ -1,28 +1,31 @@
 {
   "name": "allez-orm",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "AllezORM: lightweight browser SQLite ORM (sql.js) + schema generator CLI",
   "type": "module",
   "main": "./allez-orm.mjs",
   "module": "./allez-orm.mjs",
   "browser": "./allez-orm.mjs",
+
   "types": "./index.d.ts",
   "typesVersions": {
     "*": {
-      "*": [
-        "index.d.ts"
-      ]
+      "*": ["index.d.ts"]
     }
   },
+
   "exports": {
     ".": {
+      "types": "./index.d.ts",          // <-- expose types to TS via exports
       "import": "./allez-orm.mjs",
       "default": "./allez-orm.mjs"
     },
     "./cli": "./tools/allez-orm.mjs",
     "./package.json": "./package.json"
   },
+
   "sideEffects": false,
+
   "scripts": {
     "dev": "node dev-server.mjs",
     "dev:static": "serve -l 5173",
@@ -31,9 +34,11 @@
     "ddl:audit": "node tools/ddl-audit.mjs",
     "prepublishOnly": "node tests/test-cli.mjs && node tools/ddl-audit.mjs"
   },
+
   "bin": {
     "allez-orm": "tools/allez-orm.mjs"
   },
+
   "files": [
     "allez-orm.mjs",
     "index.d.ts",
@@ -43,34 +48,25 @@
     "LICENSE",
     "package.json"
   ],
-  "keywords": [
-    "sqlite",
-    "orm",
-    "schema",
-    "cli",
-    "browser",
-    "sql.js"
-  ],
+
+  "keywords": ["sqlite", "orm", "schema", "cli", "browser", "sql.js"],
+
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AllezMarketing/allez-orm.git"
   },
-  "bugs": {
-    "url": "https://github.com/AllezMarketing/allez-orm/issues"
-  },
+  "bugs": { "url": "https://github.com/AllezMarketing/allez-orm/issues" },
   "homepage": "https://github.com/AllezMarketing/allez-orm#readme",
   "license": "ISC",
   "author": "Allez Marketing LLC",
+
   "dependencies": {
     "sql.js": "^1.13.0"
   },
   "devDependencies": {
     "serve": "^14.2.5"
   },
-  "engines": {
-    "node": ">=18"
-  },
-  "publishConfig": {
-    "access": "public"
-  }
+
+  "engines": { "node": ">=18" },
+  "publishConfig": { "access": "public" }
 }
