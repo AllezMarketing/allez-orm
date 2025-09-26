@@ -16,7 +16,7 @@
 
   "exports": {
     ".": {
-      "types": "./index.d.ts",          // <-- expose types to TS via exports
+      "types": "./index.d.ts", 
       "import": "./allez-orm.mjs",
       "default": "./allez-orm.mjs"
     },
