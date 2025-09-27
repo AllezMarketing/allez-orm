@@ -3,6 +3,9 @@
   "version": "1.0.11",
   "description": "AllezORM: lightweight browser SQLite ORM (sql.js) + schema generator CLI",
   "type": "module",
+  "bin": {
+    "allez-orm": "tools/allez-orm.mjs"
+  },
   "main": "./allez-orm.mjs",
   "module": "./allez-orm.mjs",
   "browser": "./allez-orm.mjs",

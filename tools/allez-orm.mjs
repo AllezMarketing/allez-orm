@@ -7,25 +7,17 @@
  *  - Optional "stamps": created_at, updated_at, deleted_at
  *  - Optional unique / not-null markers
  *  - Optional ON DELETE behavior for *all* FKs via --onDelete=
- *  - Auto index per FK column in extraSQL
+ *  - Auto index per FK column in extraSQL (emitted as backticked strings)
  *  - Auto-create stub schemas for FK target tables if missing
+ *
+ * New:
+ *  - from-json <file>: bulk-generate schemas from a JSON config
+ *  - --print-json-schema: output the JSON Schema used for validation
  *
  * Usage:
  *   node tools/allez-orm.mjs create table <name> [fields...] [--dir=schemas_cli] [--stamps] [-f|--force] [--onDelete=cascade|restrict|setnull|noaction]
- *
- * Field syntax (comma or symbol sugar):
- *   name              -> bare column "name TEXT"
- *   name!             -> NOT NULL
- *   name:text         -> explicit SQL type
- *   name:text!        -> TEXT NOT NULL
- *   email:text!+      -> TEXT UNIQUE NOT NULL
- *   user_id:text->users
- *   org_id:integer->orgs
- *   slug:text,unique  -> you can also use ",unique" or ",notnull"
- *
- * Defaults:
- *   - Adds "id INTEGER PRIMARY KEY AUTOINCREMENT" if you don't provide an "id" column yourself
- *   - Default type is TEXT when omitted
+ *   node tools/allez-orm.mjs from-json <config.json> [--dir=schemas_cli] [-f|--force]
+ *   node tools/allez-orm.mjs --print-json-schema
  */
 
 import fs from "node:fs";
@@ -33,28 +25,26 @@ import path from "node:path";
 import process from "node:process";
 
 const argv = process.argv.slice(2);
+
 const usage = () => {
   console.log(`
 Usage:
   allez-orm create table <name> [options] [fields...]
+  allez-orm from-json <config.json> [--dir=<outDir>] [-f|--force]
+  allez-orm --print-json-schema
 
 Options:
   --dir=<outDir>         Output directory (default: schemas_cli)
   --stamps               Add created_at, updated_at, deleted_at columns
-  --onDelete=<mode>      ON DELETE action for *all* FKs (cascade|restrict|setnull|noaction). Default: none
-  -f, --force            Overwrite existing file
-  --help                 Show this help
+  --onDelete=<mode>      ON DELETE for *all* FKs (cascade|restrict|setnull|noaction). Default: none
+  -f, --force            Overwrite existing files
+  --help                 Show help
 
 Field syntax:
   col[:type][!][+][->target] or "col:type,unique,notnull"
   Examples: email:text!+   user_id:text->users   org_id:integer->orgs
 `);
 };
-
-if (!argv.length || argv.includes("--help") || argv.includes("-h")) {
-  usage();
-  process.exit(0);
-}
 
 const die = (m, code = 1) => { console.error(m); process.exit(code); };
 
@@ -67,11 +57,15 @@ function parseOptions(args) {
     cmd: null,
     sub: null,
     table: null,
-    fields: []
+    fields: [],
+    jsonFile: null,
+    printJsonSchema: false,
   };
   const positional = [];
   for (const a of args) {
-    if (a.startsWith("--dir=")) {
+    if (a === "--help" || a === "-h") {
+      usage(); process.exit(0);
+    } else if (a.startsWith("--dir=")) {
       out.dir = a.slice(6);
     } else if (a === "--stamps") {
       out.stamps = true;
@@ -83,42 +77,214 @@ function parseOptions(args) {
       out.onDelete = v;
     } else if (a === "-f" || a === "--force") {
       out.force = true;
+    } else if (a === "--print-json-schema") {
+      out.printJsonSchema = true;
     } else if (a.startsWith("-")) {
       die(`Unknown option: ${a}`);
     } else {
       positional.push(a);
     }
   }
-  // pick up positional command pieces
+
+  // env var ALLEZ_FORCE=1 is honored (does not break positional parsing)
+  if (process.env.ALLEZ_FORCE === "1") out.force = true;
+
   out.cmd = positional[0] || null;
   out.sub = positional[1] || null;
-  out.table = positional[2] || null;
-  out.fields = positional.slice(3);
 
-  // ✅ env var should not interfere with positional parsing
-  if (process.env.ALLEZ_FORCE === "1") {
-    out.force = true;
+  if (out.cmd === "create" && out.sub === "table") {
+    out.table = positional[2] || null;
+    out.fields = positional.slice(3);
+  } else if (out.cmd === "from-json") {
+    out.jsonFile = positional[1] || null;
   }
+
   return out;
 }
 
 const opts = parseOptions(argv);
 
-// Commands
-if (opts.cmd !== "create" || opts.sub !== "table" || !opts.table) {
+// ---------------- JSON Schema (string) ----------------
+
+const CONFIG_JSON_SCHEMA = JSON.stringify({
+  $schema: "https://json-schema.org/draft/2020-12/schema",
+  $id: "https://allez-orm.dev/allez.config.schema.json",
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    outDir: { type: "string" },
+    defaultOnDelete: { enum: ["cascade","restrict","setnull","noaction",null] },
+    tables: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          name: { type: "string", minLength: 1 },
+          stamps: { type: "boolean" },
+          fields: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["name"],
+              properties: {
+                name: { type: "string" },
+                type: { type: "string" },           // TEXT (default), INTEGER, etc
+                unique: { type: "boolean" },
+                notnull: { type: "boolean" },
+                fk: {
+                  type: ["object", "null"],
+                  additionalProperties: false,
+                  properties: {
+                    table: { type: "string" },
+                    column: { type: "string", default: "id" }
+                  }
+                }
+              }
+            }
+          }
+        },
+        required: ["name","fields"]
+      }
+    }
+  },
+  required: ["tables"]
+}, null, 2);
+
+// ---------------- command switchboard ----------------
+
+if (opts.printJsonSchema) {
+  console.log(CONFIG_JSON_SCHEMA);
+  process.exit(0);
+}
+
+if (!opts.cmd) {
   usage();
-  die("Expected: create table <name> [fields...]");
+  process.exit(0);
 }
 
-// Ensure dir
-fs.mkdirSync(opts.dir, { recursive: true });
-
-const outFile = path.join(opts.dir, `${opts.table}.schema.js`);
-if (fs.existsSync(outFile) && !opts.force) {
-  die(`Refusing to overwrite existing file: ${outFile}\n(use -f or ALLEZ_FORCE=1)`);
+if (opts.cmd === "from-json") {
+  if (!opts.jsonFile) die("from-json requires a <config.json> path");
+  runFromJson(opts).catch(e => die(e.stack || String(e)));
+  // will exit inside
+} else if (opts.cmd === "create" && opts.sub === "table" && opts.table) {
+  fs.mkdirSync(opts.dir, { recursive: true });
+  generateOne({
+    outDir: opts.dir,
+    name: opts.table,
+    stamps: opts.stamps,
+    onDelete: opts.onDelete,
+    force: opts.force,
+    fieldTokens: opts.fields
+  }).then(() => process.exit(0))
+    .catch(e => die(e.stack || String(e)));
+} else {
+  usage();
+  die("Expected: create table <name> …  or  from-json <config.json>");
 }
 
-// ---- Field parsing ---------------------------------------------------------
+// ---------------- core generator (shared) ----------------
+
+async function generateOne({ outDir, name, stamps, onDelete, force, fieldTokens }) {
+  const outFile = path.join(outDir, `${name}.schema.js`);
+  if (fs.existsSync(outFile) && !force) {
+    die(`Refusing to overwrite existing file: ${outFile}\n(use -f or ALLEZ_FORCE=1)`);
+  }
+
+  // Parse tokens into field descriptors
+  const fields = fieldTokens.map(parseFieldToken).filter(Boolean);
+
+  // Ensure id PK
+  const hasId = fields.some(f => f.name === "id");
+  if (!hasId) {
+    fields.unshift({ name: "id", type: "INTEGER", notnull: true, unique: false, fk: null, pk: true });
+  }
+
+  // stamps
+  if (stamps) {
+    fields.push(
+      { name: "created_at", type: "TEXT", notnull: true },
+      { name: "updated_at", type: "TEXT", notnull: true },
+      { name: "deleted_at", type: "TEXT", notnull: false }
+    );
+  }
+
+  // SQL
+  const columnLines = fields.map(f => sqlForColumn(f, onDelete));
+
+  // FK indexes
+  const extraSQL = [];
+  for (const f of fields) {
+    if (f.fk) {
+      extraSQL.push(
+        `\`CREATE INDEX IF NOT EXISTS idx_${name}_${f.name}_fk ON ${name}(${f.name});\``
+      );
+    }
+  }
+
+  // module text
+  const moduleText = `// ${name}.schema.js (generated by tools/allez-orm.mjs)
+const ${camel(name)}Schema = {
+  table: "${name}",
+  version: 1,
+  createSQL: \`
+CREATE TABLE IF NOT EXISTS ${name} (
+  ${columnLines.join(",\n  ")}
+);\`,
+  extraSQL: [
+    ${extraSQL.join("\n    ")}
+  ]
+};
+export default ${camel(name)}Schema;
+`;
+
+  fs.mkdirSync(outDir, { recursive: true });
+  fs.writeFileSync(outFile, moduleText, "utf8");
+  console.log(`Wrote ${outFile}`);
+
+  // stub FK targets
+  const fkTargets = Array.from(new Set(fields.filter(f => f.fk).map(f => f.fk.table)))
+    .filter(t => t && t !== name);
+
+  for (const t of fkTargets) {
+    const stubPath = path.join(outDir, `${t}.schema.js`);
+    if (!fs.existsSync(stubPath)) {
+      const stub = `// ${t}.schema.js (generated by tools/allez-orm.mjs - stub for FK target)
+const ${camel(t)}Schema = {
+  table: "${t}",
+  version: 1,
+  createSQL: \`
+CREATE TABLE IF NOT EXISTS ${t} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT
+);\`,
+  extraSQL: [
+    
+  ]
+};
+export default ${camel(t)}Schema;
+`;
+      fs.writeFileSync(stubPath, stub, "utf8");
+      console.log(`Wrote stub ${stubPath}`);
+    }
+  }
+}
+
+function sqlForColumn(f, onDelete) {
+  if (f.pk) return `id INTEGER PRIMARY KEY AUTOINCREMENT`;
+  let s = `${f.name} ${f.type}`;
+  // ordering (UNIQUE then NOT NULL) matches tests
+  if (f.unique) s += ` UNIQUE`;
+  if (f.notnull) s += ` NOT NULL`;
+  if (f.fk) {
+    s += ` REFERENCES ${f.fk.table}(${f.fk.column || "id"})`;
+    if (onDelete) {
+      const map = { cascade: "CASCADE", restrict: "RESTRICT", setnull: "SET NULL", noaction: "NO ACTION" };
+      s += ` ON DELETE ${map[onDelete]}`;
+    }
+  }
+  return s;
+}
 
 function parseFieldToken(tok) {
   // Accept "col[:type][!][+][->target]" OR "col:type,unique,notnull"
@@ -155,7 +321,7 @@ function parseFieldToken(tok) {
     type = null;
   }
 
-  // Collect flags from BOTH the name token and the type token
+  // flags from both name and type segments
   const nameHasBang = /!/.test(name);
   const nameHasPlus = /\+/.test(name);
   const typeHasBang = type ? /!/.test(type) : false;
@@ -164,7 +330,7 @@ function parseFieldToken(tok) {
   if (nameHasBang || typeHasBang) ret.notnull = true;
   if (nameHasPlus || typeHasPlus) ret.unique = true;
 
-  // Clean trailing !/+ off name and type segments
+  // Clean trailing !/+ off name and type
   name = name.replace(/[!+]+$/,"").trim();
   if (type) {
     type = type.replace(/[!+]+$/,"").trim();
@@ -183,101 +349,55 @@ function parseFieldToken(tok) {
   return ret;
 }
 
-const fields = opts.fields.map(parseFieldToken).filter(Boolean);
-
-// Ensure an id column if not provided
-const hasId = fields.some(f => f.name === "id");
-if (!hasId) {
-  fields.unshift({ name: "id", type: "INTEGER", notnull: true, unique: false, fk: null, pk: true });
-}
-
-// Stamps
-if (opts.stamps) {
-  fields.push(
-    { name: "created_at", type: "TEXT", notnull: true },
-    { name: "updated_at", type: "TEXT", notnull: true },
-    { name: "deleted_at", type: "TEXT", notnull: false }
-  );
-}
-
-// ---- SQL assembly ----------------------------------------------------------
-
-function sqlForColumn(f) {
-  if (f.pk) return `id INTEGER PRIMARY KEY AUTOINCREMENT`;
-  let s = `${f.name} ${f.type}`;
-
-  // Match test ordering: UNIQUE first, then NOT NULL
-  if (f.unique) s += ` UNIQUE`;
-  if (f.notnull) s += ` NOT NULL`;
-
-  if (f.fk) {
-    s += ` REFERENCES ${f.fk.table}(${f.fk.column})`;
-    if (opts.onDelete) {
-      const map = { cascade: "CASCADE", restrict: "RESTRICT", setnull: "SET NULL", noaction: "NO ACTION" };
-      s += ` ON DELETE ${map[opts.onDelete]}`;
-    }
-  }
-  return s;
-}
-
-const columnLines = fields.map(sqlForColumn);
-
-// Build extraSQL (indexes for FK columns) — emit with BACKTICKS to satisfy tests
-const extraSQL = [];
-for (const f of fields) {
-  if (f.fk) {
-    extraSQL.push(
-      `\`CREATE INDEX IF NOT EXISTS idx_${opts.table}_${f.name}_fk ON ${opts.table}(${f.name});\``
-    );
-  }
-}
-
-// Compose module text
-const moduleText = `// ${opts.table}.schema.js (generated by tools/allez-orm.mjs)
-const ${camel(opts.table)}Schema = {
-  table: "${opts.table}",
-  version: 1,
-  createSQL: \`
-CREATE TABLE IF NOT EXISTS ${opts.table} (
-  ${columnLines.join(",\n  ")}
-);\`,
-  extraSQL: [
-    ${extraSQL.join("\n    ")}
-  ]
-};
-export default ${camel(opts.table)}Schema;
-`;
-
-fs.writeFileSync(outFile, moduleText, "utf8");
-console.log(`Wrote ${outFile}`);
-
-// ---- Auto-create stub schemas for FK targets (if missing) ------------------
-const fkTargets = Array.from(new Set(fields.filter(f => f.fk).map(f => f.fk.table)))
-  .filter(t => t && t !== opts.table);
-
-for (const t of fkTargets) {
-  const stubPath = path.join(opts.dir, `${t}.schema.js`);
-  if (!fs.existsSync(stubPath)) {
-    const stub = `// ${t}.schema.js (generated by tools/allez-orm.mjs - stub for FK target)
-const ${camel(t)}Schema = {
-  table: "${t}",
-  version: 1,
-  createSQL: \`
-CREATE TABLE IF NOT EXISTS ${t} (
-  id INTEGER PRIMARY KEY AUTOINCREMENT
-);\`,
-  extraSQL: [
-    
-  ]
-};
-export default ${camel(t)}Schema;
-`;
-    fs.writeFileSync(stubPath, stub, "utf8");
-    console.log(`Wrote stub ${stubPath}`);
-  }
-}
-
-process.exit(0);
-
-// ---- helpers ---------------------------------------------------------------
 function camel(s){return s.replace(/[-_](.)/g,(_,c)=>c.toUpperCase());}
+
+// ---------------- from-json implementation ----------------
+
+async function runFromJson(cliOpts) {
+  const file = path.resolve(cliOpts.jsonFile);
+  if (!fs.existsSync(file)) die(`Config not found: ${file}`);
+
+  const raw = fs.readFileSync(file, "utf8");
+  let cfg;
+  try { cfg = JSON.parse(raw); } catch (e) { die(`Invalid JSON: ${e.message}`); }
+
+  // light validation against our schema
+  // (kept minimal to avoid bundling a validator)
+  if (!cfg || !Array.isArray(cfg.tables)) die(`Config must have a "tables" array.`);
+
+  const outDir = cliOpts.dir || cfg.outDir || "schemas_cli";
+  const defaultOnDelete = cfg.defaultOnDelete ?? null;
+
+  fs.mkdirSync(outDir, { recursive: true });
+
+  for (const t of cfg.tables) {
+    if (!t || !t.name || !Array.isArray(t.fields)) {
+      die(`Each table requires { name, fields[] }`);
+    }
+    // convert config fields -> tokens for existing generator
+    const tokens = [];
+    for (const f of t.fields) {
+      let token = f.name;
+      const type = (f.type || "TEXT").toLowerCase();
+
+      token += `:${type}`;
+      if (f.notnull) token += `!`;
+      if (f.unique) token += `+`;
+      if (f.fk && f.fk.table) {
+        token += `->${f.fk.table}`;
+      }
+      tokens.push(token);
+    }
+
+    await generateOne({
+      outDir,
+      name: t.name,
+      stamps: !!t.stamps,
+      onDelete: defaultOnDelete || null,
+      force: cliOpts.force,
+      fieldTokens: tokens
+    });
+  }
+
+  process.exit(0);
+}
