@@ -25,18 +25,18 @@
 
 const DEFAULT_DB_NAME = "allez.db";
 const DEFAULT_AUTOSAVE_MS = 1500;
+const isBrowser = typeof window !== "undefined";
 
-/** Resolve/init sql.js WASM in a way that never triggers node core deps. */
+// -------- sql.js loader (browser-safe, no node core deps) --------
 async function loadSqlJs(opts = {}) {
   // 1) If user included <script src="https://sql.js.org/dist/sql-wasm.js">, use it.
-  if (typeof window !== "undefined" && window.initSqlJs) {
+  if (isBrowser && window.initSqlJs) {
     return await window.initSqlJs({
       locateFile: opts.wasmLocateFile ?? (f => `https://sql.js.org/dist/${f}`)
     });
   }
 
-  // 2) Try a CDN ESM import that bundlers won't touch (no fs/path/crypto resolution).
-  //    Dynamic URL import requires CORS; the official CDN allows it.
+  // 2) Try CDN ESM (CORS-enabled). Bundlers won’t rewrite this because of webpackIgnore.
   try {
     // @ts-ignore
     const mod = await import(/* webpackIgnore: true */ "https://sql.js.org/dist/sql-wasm.js");
@@ -48,8 +48,7 @@ async function loadSqlJs(opts = {}) {
     // continue to step 3
   }
 
-  // 3) Last resort: local dist entry. This ONLY works if the consumer configured
-  //    resolve.alias OR fallbacks to disable node core modules in their bundler.
+  // 3) Fallback to local dist entry. (Only works if project resolves to browser build.)
   const mod = await import("sql.js/dist/sql-wasm.js"); // never import "sql.js"
   const initSqlJs = mod.default || mod;
   return await initSqlJs({
@@ -57,6 +56,7 @@ async function loadSqlJs(opts = {}) {
   });
 }
 
+// ------------------------- Core ORM -------------------------
 export class AllezORM {
   /** @param {any} SQL @param {any} db @param {InitOptions} opts */
   constructor(SQL, db, opts) {
@@ -88,11 +88,10 @@ export class AllezORM {
 
   /** @param {InitOptions=} opts */
   static async init(opts = {}) {
-    // Always use the WASM/browser build loader above.
     const SQL = await loadSqlJs(opts);
 
     // Restore DB from IndexedDB, or create fresh
-    const saved = await idbGet(opts.dbName ?? DEFAULT_DB_NAME);
+    const saved = isBrowser ? (await idbGet(opts.dbName ?? DEFAULT_DB_NAME)) : null;
     const db = saved ? new SQL.Database(saved) : new SQL.Database();
 
     const orm = new AllezORM(SQL, db, opts);
@@ -100,7 +99,9 @@ export class AllezORM {
     await orm.#ensureMeta();
 
     const schemas = collectSchemas(opts);
-    await orm.registerSchemas(schemas);
+    if (schemas.length) {
+      await orm.registerSchemas(schemas);
+    }
     db.exec("PRAGMA foreign_keys = ON;");
 
     return orm;
@@ -169,7 +170,13 @@ export class AllezORM {
         );
       },
       async deleteSoft(id, ts = new Date().toISOString()) {
-        await self.execute(`UPDATE ${table} SET deleted_at=? WHERE id=?`, [ts, id]);
+        // keep naming consistent with your schema (deletedAt)
+        // adjust if your table uses deleted_at instead
+        try {
+          await self.execute(`UPDATE ${table} SET deletedAt=? WHERE id=?`, [ts, id]);
+        } catch {
+          await self.execute(`UPDATE ${table} SET deleted_at=? WHERE id=?`, [ts, id]);
+        }
       },
       async remove(id) {
         await self.execute(`DELETE FROM ${table} WHERE id=?`, [id]);
@@ -195,6 +202,10 @@ export class AllezORM {
   async registerSchemas(schemas) {
     const meta = await this.#currentVersions();
     for (const s of schemas) {
+      if (!s?.table || !s?.createSQL) {
+        // skip invalid schema silently to avoid breaking init
+        continue;
+      }
       const exists = await this.get(
         `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
         [s.table]
@@ -225,7 +236,7 @@ export class AllezORM {
 
   async saveNow() {
     const data = this.db.export(); // Uint8Array
-    await idbSet(this.dbName, data);
+    if (isBrowser) await idbSet(this.dbName, data);
   }
 
   // ---------------- internals ----------------
@@ -247,6 +258,7 @@ export class AllezORM {
   }
 
   #scheduleSave() {
+    if (!isBrowser) return;
     clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => { void this.saveNow(); }, this.autoSaveMs);
   }
@@ -260,10 +272,11 @@ function collectSchemas(opts) {
     ? Object.values(opts.schemaModules).map(m => m.default)
     : [];
   const fromArray = opts.schemas ?? [];
-  return [...fromModules, ...fromArray];
+  return [...fromModules, ...fromArray].filter(Boolean);
 }
 
 function openIdb() {
+  if (!isBrowser) throw new Error('IndexedDB not available in this environment.');
   return new Promise((resolve, reject) => {
     const req = indexedDB.open("allez-orm-store", 1);
     req.onupgradeneeded = () => req.result.createObjectStore("dbs");
@@ -273,6 +286,7 @@ function openIdb() {
 }
 
 async function idbGet(key) {
+  if (!isBrowser) return null;
   const db = await openIdb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction("dbs", "readonly");
@@ -284,6 +298,7 @@ async function idbGet(key) {
 }
 
 async function idbSet(key, value) {
+  if (!isBrowser) return;
   const db = await openIdb();
   return new Promise((resolve, reject) => {
     const tx = db.transaction("dbs", "readwrite");
@@ -292,3 +307,52 @@ async function idbSet(key, value) {
     tx.onerror = () => reject(tx.error);
   });
 }
+
+// ---------------- Browser-friendly convenience exports ----------------
+// These provide the API your Angular app expects: openDb/applySchemas/query/exec
+
+/** Cache instances per DB name so consumers can share a handle. */
+const _instances = new Map();
+
+/**
+ * Open (or reuse) a browser DB by name. Returns an AllezORM instance.
+ * @param {string} name
+ * @param {InitOptions=} opts
+ */
+export async function openBrowserDb(name, opts = {}) {
+  const key = name || (opts.dbName ?? DEFAULT_DB_NAME);
+  if (_instances.has(key)) return _instances.get(key);
+  const p = AllezORM.init({ ...opts, dbName: key });
+  _instances.set(key, p);
+  return p;
+}
+
+/** Alias kept for compatibility with consumers requesting openDb */
+export const openDb = openBrowserDb;
+
+/** Apply an array of Schema objects on an opened AllezORM instance. */
+export async function applySchemas(db, schemas) {
+  if (!db || typeof db.registerSchemas !== 'function') {
+    throw new Error('applySchemas: invalid db instance; expected AllezORM.');
+  }
+  await db.registerSchemas(schemas ?? []);
+}
+
+/** Run a SELECT and return rows as plain objects. */
+export async function query(db, sql, params = []) {
+  if (!db || typeof db.query !== 'function') {
+    throw new Error('query: invalid db instance; expected AllezORM.');
+  }
+  return db.query(sql, params);
+}
+
+/** Execute DDL/DML. */
+export async function exec(db, sql, params = []) {
+  if (!db || typeof db.execute !== 'function') {
+    throw new Error('exec: invalid db instance; expected AllezORM.');
+  }
+  await db.execute(sql, params);
+}
+
+// Keep a default export for advanced consumers.
+export default AllezORM;
