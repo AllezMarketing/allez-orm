@@ -170,8 +170,7 @@ export class AllezORM {
         );
       },
       async deleteSoft(id, ts = new Date().toISOString()) {
-        // keep naming consistent with your schema (deletedAt)
-        // adjust if your table uses deleted_at instead
+        // keep naming consistent across projects
         try {
           await self.execute(`UPDATE ${table} SET deletedAt=? WHERE id=?`, [ts, id]);
         } catch {
