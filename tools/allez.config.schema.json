@@ -1,47 +1,103 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://allez-orm.dev/allez.config.schema.json",
+  "title": "AllezORM Config",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "outDir": { "type": "string" },
     "defaultOnDelete": {
-      "enum": ["cascade", "restrict", "setnull", "noaction", null]
+      "type": ["string", "null"],
+      "enum": ["cascade", "restrict", "setnull", "noaction", null],
+      "description": "Global ON DELETE for all FKs when generating from JSON. Per-column overrides are not currently supported."
     },
-    "tables": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["name", "fields"],
-        "properties": {
-          "name": { "type": "string", "minLength": 1 },
-          "stamps": { "type": "boolean" },
-          "fields": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["name"],
-              "properties": {
-                "name": { "type": "string" },
-                "type": { "type": "string", "default": "TEXT" },
-                "unique": { "type": "boolean", "default": false },
-                "notnull": { "type": "boolean", "default": false },
-                "fk": {
-                  "type": ["object", "null"],
-                  "additionalProperties": false,
-                  "properties": {
-                    "table": { "type": "string" },
-                    "column": { "type": "string", "default": "id" }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+    "tables": { "$ref": "#/$defs/TableArray" },
+    "Tables": { "$ref": "#/$defs/TableArrayPascal" }
   },
-  "required": ["tables"]
+  "anyOf": [
+    { "required": ["tables"] },
+    { "required": ["Tables"] }
+  ],
+  "required": [],
+  "$defs": {
+    "FK": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "table": { "type": "string" },
+        "column": { "type": "string", "default": "id" }
+      },
+      "required": ["table"]
+    },
+    "FKPascal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "Table": { "type": "string" },
+        "Column": { "type": "string", "default": "id" }
+      },
+      "required": ["Table"]
+    },
+
+    "Field": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "default": "TEXT" },
+        "unique": { "type": "boolean", "default": false },
+        "notnull": { "type": "boolean", "default": false },
+        "fk": { "anyOf": [ { "$ref": "#/$defs/FK" }, { "type": "null" } ] }
+      },
+      "required": ["name"]
+    },
+    "FieldPascal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "Name": { "type": "string" },
+        "Type": { "type": "string", "default": "TEXT" },
+        "Unique": { "type": "boolean", "default": false },
+        "NotNull": { "type": "boolean", "default": false },
+        "FK": { "anyOf": [ { "$ref": "#/$defs/FKPascal" }, { "type": "null" } ] }
+      },
+      "required": ["Name"]
+    },
+
+    "Table": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "stamps": { "type": "boolean", "default": false },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Field" }
+        }
+      },
+      "required": ["name", "fields"]
+    },
+    "TablePascal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "Name": { "type": "string", "minLength": 1 },
+        "Stamps": { "type": "boolean", "default": false },
+        "Columns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FieldPascal" }
+        }
+      },
+      "required": ["Name", "Columns"]
+    },
+
+    "TableArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Table" }
+    },
+    "TableArrayPascal": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/TablePascal" }
+    }
+  }
 }
