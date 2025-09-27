@@ -1,80 +1,75 @@
-// types/index.d.ts
+// index.d.ts
 
-// ===== Public model types =====
 export interface Schema {
-  /** table name */
   table: string;
-  /** CREATE TABLE IF NOT EXISTS ... */
   createSQL: string;
-  /** indexes / triggers / FTS setup */
   extraSQL?: string[];
-  /** defaults to 1 */
   version?: number;
-  /** run when schema version increases */
-  onUpgrade?(
-    db: any,        // low-level sql.js Database (same instance you construct in init)
-    from: number,
-    to: number
-  ): void | Promise<void>;
+  onUpgrade?(db: any, from: number, to: number): void | Promise<void>;
 }
 
 export interface InitOptions {
   dbName?: string;
   autoSaveMs?: number;
-  /**
-   * Returns the URL for the sql.js wasm file (e.g. f => `https://sql.js.org/dist/${f}`)
-   */
   wasmLocateFile?(file: string): string;
-  /** schema list to create/upgrade */
   schemas?: Schema[];
-  /**
-   * For bundlers (e.g. Vite import.meta.glob results):
-   *   { "./schemas/user.js": { default: Schema }, ... }
-   */
   schemaModules?: Record<string, { default: Schema }>;
 }
 
-/** Result rows are plain objects from sql.js getAsObject() */
 export type Row = Record<string, any>;
 
-/** Helper interface returned by table('<name>') */
 export interface TableHelper<T extends Row = Row> {
   insert(obj: Partial<T>): Promise<void>;
   upsert(obj: Partial<T>): Promise<void>;
   update(id: any, patch: Partial<T>): Promise<void>;
-  /** soft-delete: sets deleted_at */
   deleteSoft(id: any, ts?: string): Promise<void>;
-  /** hard delete */
   remove(id: any): Promise<void>;
-  findById(id: any): Promise<T | null>;
-  /** WHERE col LIKE ? OR ... LIMIT ? */
+  findById(id: any): Promise<T | undefined>;
   searchLike(q: string, columns: (keyof T | string)[], limit?: number): Promise<T[]>;
 }
 
-// ===== Main class =====
 export class AllezORM {
-  /** Constructed by `init`, but exported for advanced usage */
   constructor(SQL: any, db: any, opts: InitOptions);
 
-  // ---- lifecycle ----
+  /** Initialize (loads sql.js, restores from IndexedDB, applies schemas). */
   static init(opts?: InitOptions): Promise<AllezORM>;
+
+  /** Persist the current database to IndexedDB immediately. */
   saveNow(): Promise<void>;
 
-  // ---- SQL helpers ----
-  /** run arbitrary SQL (DDL/DML). Returns true on success. */
+  /** Execute arbitrary SQL and auto-save (convenience, returns true). */
   exec(sql: string, params?: any[]): Promise<boolean>;
-  /** alias of exec */
-  run(sql: string, params?: any[]): Promise<boolean>;
-  /** prepared exec that schedules persistence */
-  execute(sql: string, params?: any[]): Promise<void>;
-  /** SELECT ... -> array of objects */
-  query<T = Row>(sql: string, params?: any[]): Promise<T[]>;
-  /** SELECT ... LIMIT 1 -> single row or null */
-  get<T = Row>(sql: string, params?: any[]): Promise<T | null>;
 
-  // ---- tables & schemas ----
-  /** convenience helpers bound to a single table */
+  /** Alias for exec. */
+  run(sql: string, params?: any[]): Promise<boolean>;
+
+  /** Low-level execute; schedules a debounced save. */
+  execute(sql: string, params?: any[]): Promise<void>;
+
+  /** SELECT helper returning plain objects. */
+  query<T = Row>(sql: string, params?: any[]): Promise<T[]>;
+
+  /** SELECT one row (undefined if no row). */
+  get<T = Row>(sql: string, params?: any[]): Promise<T | undefined>;
+
+  /** Table-scoped helpers. */
   table<T extends Row = Row>(table: string): TableHelper<T>;
-  /** create/upgrade all schemas; persists versions in allez_meta */
+
+  /** Register / upgrade schemas. */
   registerSchemas(schemas: Schema[]): Promise<void>;
 }
+
+/** Open (or reuse) a browser DB by name. */
+export function openBrowserDb(name: string, opts?: InitOptions): Promise<AllezORM>;
+
+/** Alias for openBrowserDb. */
+export const openDb: typeof openBrowserDb;
+
+/** Apply an array of schemas to an opened AllezORM instance. */
+export function applySchemas(db: AllezORM, schemas?: Schema[]): Promise<void>;
+
+/** Convenience helpers that operate on an AllezORM instance. */
+export function query<T = Row>(db: AllezORM, sql: string, params?: any[]): Promise<T[]>;
+export function exec(db: AllezORM, sql: string, params?: any[]): Promise<void>;
+
+export default AllezORM;

@@ -197,23 +197,51 @@ export class AllezORM {
 
   // ---------------- schema registration ----------------
 
+  /** Soft-run an extra SQL statement; swallow known-unsupported patterns. */
+  async #tryExtra(sql) {
+    const s = (sql || "").trim();
+    if (!s) return;
+
+    // SQLite does not support adding FK constraints via ALTER TABLE.
+    const isAlterFk =
+      /^ALTER\s+TABLE\s+.+\s+ADD\s+FOREIGN\s+KEY/i.test(s);
+
+    try {
+      if (isAlterFk) {
+        console.warn(
+          "[AllezORM] Skipping unsupported statement (SQLite):",
+          s
+        );
+        return;
+      }
+      await this.execute(s);
+    } catch (err) {
+      console.warn("[AllezORM] extraSQL failed and was skipped:", s, err);
+    }
+  }
+
   /** @param {Schema[]} schemas */
   async registerSchemas(schemas) {
     const meta = await this.#currentVersions();
     for (const s of schemas) {
-      if (!s?.table || !s?.createSQL) {
-        // skip invalid schema silently to avoid breaking init
-        continue;
-      }
+      if (!s?.table || !s?.createSQL) continue;
+
       const exists = await this.get(
         `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
         [s.table]
       );
+
       if (!exists) {
+        // Hard-fail for invalid CREATE (developer action required)
         await this.execute(s.createSQL);
+
+        // Best-effort for side DDL (indexes/triggers/fts)
         if (Array.isArray(s.extraSQL)) {
-          for (const x of s.extraSQL) await this.execute(x);
+          for (const x of s.extraSQL) {
+            await this.#tryExtra(x);
+          }
         }
+
         await this.execute(
           `INSERT OR REPLACE INTO allez_meta(table_name,version) VALUES(?,?)`,
           [s.table, s.version ?? 1]

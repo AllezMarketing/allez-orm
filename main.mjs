@@ -96,7 +96,8 @@ let sortDir = "DESC"; // default newest-first when 'updated_at' exists
 
 /* ─────────────────────── data access helpers ─────────────────────── */
 async function fetchSchemas() {
-  const r = await fetch("/api/schemas");
+  // no-cache to pick up new files from the CLI immediately
+  const r = await fetch(`/api/schemas?t=${Date.now()}`, { cache: "no-store" });
   const j = await r.json();
   return j.schemas || [];
 }
@@ -264,19 +265,29 @@ on($("#createTableGo"), "click", async (ev) => {
   const specs = $("#newTableSpecs").value.trim();
   if (!name) return dlgTable.close();
 
-  const args = ["create", "table", name, ...(specs ? specs.split(/\s+/) : []), "--stamps"];
-  const r = await fetch("/api/cli", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ args })
-  });
-  const j = await r.json();
-  if (j.code !== 0) alert("CLI error:\n" + (j.err || j.out));
+  try {
+    const args = ["create", "table", name, ...(specs ? specs.split(/\s+/) : []), "--stamps"];
+    const r = await fetch("/api/cli", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ args })
+    });
+    const j = await r.json();
 
-  await initORM();
-  await refreshTablesUI();
-  await searchAndRender();
-  dlgTable.close();
+    if (j.code !== 0) {
+      alert("CLI error:\n" + (j.err || j.out || "Unknown error"));
+      return; // do not proceed if schema file was not created
+    }
+
+    // success: re-init ORM from fresh schema list and show the new table
+    await initORM();
+    currentTable = name; // focus the newly created table
+    await refreshTablesUI();
+    await searchAndRender();
+    dlgTable.close();
+  } catch (e) {
+    alert("Create table failed:\n" + String(e));
+  }
 });
 
 /* Add column: ALTER TABLE in browser + patch schema file */

@@ -1,25 +1,22 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8"/>
-  <title>AllezORM Runtime Tests</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
+  <title>AllezORM Runtime Test</title>
   <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;background:#fff;color:#111}
-    header{padding:16px 20px;font-weight:700;font-size:22px;border-bottom:1px solid #eee}
-    .wrap{padding:16px 20px}
-    .ok{color:#0a7f2e}.fail{color:#b00020}
-    pre{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:12px;overflow:auto}
-    .muted{color:#6b7280}
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; color: #eee; background:#111; }
+    .muted { color:#aaa; font-size: 12px; }
+    .ok { color:#8ad66d; }
+    .fail { color:#ff6b6b; }
+    pre { background:#1b1b1b; padding:12px; border-radius:8px; overflow:auto; }
+    a { color:#7fb1ff; }
   </style>
 </head>
 <body>
-  <header>AllezORM Runtime Tests</header>
-  <div class="wrap">
-    <div id="log" class="muted">Running…</div>
-    <div id="details"></div>
-  </div>
-  <script src="https://sql.js.org/dist/sql-wasm.js"></script>
+  <h2>AllezORM Runtime Test</h2>
+  <div id="log" class="muted">Running…</div>
+  <div id="details" style="margin-top:12px"></div>
+
   <script type="module" src="./test-runtime.mjs"></script>
 </body>
 </html>

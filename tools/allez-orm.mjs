@@ -1,361 +1,283 @@
 #!/usr/bin/env node
-// tools/allez-orm.mjs  —  AllezORM schema generator with foreign-key support (SQLite)
+/**
+ * Allez ORM – schema generator CLI
+ *
+ * Generates a <table>.schema.js with:
+ *  - CREATE TABLE with inline foreign keys:  col TYPE REFERENCES target(id) [ON DELETE ...]
+ *  - Optional "stamps": created_at, updated_at, deleted_at
+ *  - Optional unique / not-null markers
+ *  - Optional ON DELETE behavior for *all* FKs via --onDelete=
+ *  - Auto index per FK column in extraSQL
+ *  - Auto-create stub schemas for FK target tables if missing
+ *
+ * Usage:
+ *   node tools/allez-orm.mjs create table <name> [fields...] [--dir=schemas_cli] [--stamps] [-f|--force] [--onDelete=cascade|restrict|setnull|noaction]
+ *
+ * Field syntax (comma or symbol sugar):
+ *   name              -> bare column "name TEXT"
+ *   name!             -> NOT NULL
+ *   name:text         -> explicit SQL type
+ *   name:text!        -> TEXT NOT NULL
+ *   email:text!+      -> TEXT UNIQUE NOT NULL
+ *   user_id:text->users
+ *   org_id:integer->orgs
+ *   slug:text,unique  -> you can also use ",unique" or ",notnull"
+ *
+ * Defaults:
+ *   - Adds "id INTEGER PRIMARY KEY AUTOINCREMENT" if you don't provide an "id" column yourself
+ *   - Default type is TEXT when omitted
+ */
+
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
-const CWD = process.cwd();
-
-// ---- robust force detection (works across shells) ----
-const FORCE_FROM_ENV = String(process.env.ALLEZ_FORCE || "").trim() === "1";
-const FORCE_FROM_ARGV = process.argv.includes("--force") || process.argv.includes("-f");
-const FORCE_EFFECTIVE = FORCE_FROM_ENV || FORCE_FROM_ARGV;
-
-function die(msg, code = 1) { console.error(msg); process.exit(code); }
-function help() {
+const argv = process.argv.slice(2);
+const usage = () => {
   console.log(`
-AllezORM schema generator
-
 Usage:
-  allez-orm create table <name> [fieldSpec ...]
-    [--dir=./schemas] [--ts] [--version=1]
-    [--stamps] [--soft-delete] [--force|-f]
-    [--onDelete=cascade|restrict|setnull|setdefault]
-    [--onUpdate=cascade|restrict|setnull|setdefault]
-    [--ensure-refs] [--no-fk-index]
+  allez-orm create table <name> [options] [fields...]
 
-Env overrides:
-  ALLEZ_FORCE=1        # forces overwrite even if your shell drops --force
+Options:
+  --dir=<outDir>         Output directory (default: schemas_cli)
+  --stamps               Add created_at, updated_at, deleted_at columns
+  --onDelete=<mode>      ON DELETE action for *all* FKs (cascade|restrict|setnull|noaction). Default: none
+  -f, --force            Overwrite existing file
+  --help                 Show this help
 
-FieldSpec grammar (compact):
-  name                       -> TEXT
-  name! / name+ / name^ ...  -> short flags directly after name (default type TEXT)
-  name:type                  -> type = INTEGER|TEXT|REAL|BLOB|NUMERIC (aliases allowed)
-  name:type!+^#~             -> ! NOT NULL, + UNIQUE, ^ INDEX, # PRIMARY KEY, ~ AUTOINCREMENT
-  name:type,notnull,unique,index,pk,ai,default=<expr>
-  ^col                       -> standalone index on col
-  fk shorthand:
-    col>table                -> INTEGER REFERENCES table(id)
-    col>table(col)           -> INTEGER REFERENCES table(col)
-    col:fk(table.col)        -> same, leaves type as INTEGER unless you pass another
-  PowerShell-safe FK alias:
-    col->table[(col)]        -> same as '>'
-  Per-field FK options via commas: ,onDelete=cascade ,onUpdate=restrict ,defer ,deferrable
+Field syntax:
+  col[:type][!][+][->target] or "col:type,unique,notnull"
+  Examples: email:text!+   user_id:text->users   org_id:integer->orgs
 `);
-}
-
-const TYPE_ALIASES = {
-  int: "INTEGER", integer: "INTEGER", bool: "INTEGER",
-  text: "TEXT", string: "TEXT", datetime: "TEXT", timestamp: "TEXT",
-  real: "REAL", float: "REAL",
-  number: "NUMERIC", numeric: "NUMERIC", blob: "BLOB"
 };
 
-const VALID_ACTIONS = new Set(["cascade", "restrict", "setnull", "setdefault"]);
-
-function kebabToPascal(name) {
-  return name.split(/[_\- ]+/).map(s => s.charAt(0).toUpperCase() + s.slice(1)).join("");
-}
-function sanitizeTable(name) {
-  const ok = name.trim().toLowerCase().replace(/[^\w]/g, "_");
-  if (!ok) die("Invalid table name.");
-  return ok;
+if (!argv.length || argv.includes("--help") || argv.includes("-h")) {
+  usage();
+  process.exit(0);
 }
 
-function parseArgs(argv) {
+const die = (m, code = 1) => { console.error(m); process.exit(code); };
+
+function parseOptions(args) {
   const out = {
-    nonFlags: [], dir: "schemas", asTS: false, version: 1, stamps: false, softDelete: false, force: false,
-    ensureRefs: true, onDelete: null, onUpdate: null, noFkIndex: false
+    dir: "schemas_cli",
+    stamps: false,
+    onDelete: null,
+    force: false,
+    cmd: null,
+    sub: null,
+    table: null,
+    fields: []
   };
-  for (const a of argv) {
-    if (a === "--") continue;                           // ignore npm passthrough token
-    if (a === "--ts") out.asTS = true;
-    else if (a.startsWith("--dir=")) out.dir = a.split("=")[1];
-    else if (a.startsWith("--version=")) out.version = Number(a.split("=")[1] || "1") || 1;
-    else if (a === "--stamps") out.stamps = true;
-    else if (a === "--soft-delete") out.softDelete = true;
-    else if (a === "--force" || a === "-f") out.force = true;
-    else if (a === "--ensure-refs") out.ensureRefs = true;
-    else if (a === "--no-fk-index") out.noFkIndex = true;
-    else if (a.startsWith("--onDelete=")) out.onDelete = a.split("=")[1].toLowerCase();
-    else if (a.startsWith("--onUpdate=")) out.onUpdate = a.split("=")[1].toLowerCase();
-    else out.nonFlags.push(a);
+  const positional = [];
+  for (const a of args) {
+    if (a.startsWith("--dir=")) {
+      out.dir = a.slice(6);
+    } else if (a === "--stamps") {
+      out.stamps = true;
+    } else if (a.startsWith("--onDelete=")) {
+      const v = a.slice(11).toLowerCase();
+      if (!["cascade","restrict","setnull","noaction"].includes(v)) {
+        die(`Invalid --onDelete value: ${v}`);
+      }
+      out.onDelete = v;
+    } else if (a === "-f" || a === "--force") {
+      out.force = true;
+    } else if (a.startsWith("-")) {
+      die(`Unknown option: ${a}`);
+    } else {
+      positional.push(a);
+    }
   }
-  if (FORCE_EFFECTIVE) out.force = true;
+  // pick up positional command pieces
+  out.cmd = positional[0] || null;
+  out.sub = positional[1] || null;
+  out.table = positional[2] || null;
+  out.fields = positional.slice(3);
 
-  if (out.onDelete && !VALID_ACTIONS.has(out.onDelete)) die("Invalid --onDelete action");
-  if (out.onUpdate && !VALID_ACTIONS.has(out.onUpdate)) die("Invalid --onUpdate action");
+  // ✅ env var should not interfere with positional parsing
+  if (process.env.ALLEZ_FORCE === "1") {
+    out.force = true;
+  }
   return out;
 }
 
-// ---- helper: parse "name[:type][shortFlags]" into parts ----
-function parseNameTypeFlags(base) {
-  let name, rhs = "", explicitType = false;
+const opts = parseOptions(argv);
 
-  if (base.includes(":")) {
-    [name, rhs = ""] = base.split(":");
-    explicitType = true;
+// Commands
+if (opts.cmd !== "create" || opts.sub !== "table" || !opts.table) {
+  usage();
+  die("Expected: create table <name> [fields...]");
+}
+
+// Ensure dir
+fs.mkdirSync(opts.dir, { recursive: true });
+
+const outFile = path.join(opts.dir, `${opts.table}.schema.js`);
+if (fs.existsSync(outFile) && !opts.force) {
+  die(`Refusing to overwrite existing file: ${outFile}\n(use -f or ALLEZ_FORCE=1)`);
+}
+
+// ---- Field parsing ---------------------------------------------------------
+
+function parseFieldToken(tok) {
+  // Accept "col[:type][!][+][->target]" OR "col:type,unique,notnull"
+  const ret = { name: "", type: "TEXT", notnull: false, unique: false, fk: null };
+  if (!tok) return null;
+
+  // Split on "," for attribute list
+  let main = tok;
+  let flags = [];
+  if (tok.includes(",")) {
+    const [lhs, ...rhs] = tok.split(",");
+    main = lhs;
+    flags = rhs.map(s => s.trim().toLowerCase());
+  }
+
+  // name : type -> target
+  let name = main;
+  let type = null;
+  let fkTarget = null;
+
+  // ->target
+  const fkIdx = main.indexOf("->");
+  if (fkIdx >= 0) {
+    fkTarget = main.slice(fkIdx + 2).trim();
+    name = main.slice(0, fkIdx);
+  }
+
+  // :type
+  const typeIdx = name.indexOf(":");
+  if (typeIdx >= 0) {
+    type = name.slice(typeIdx + 1).trim();   // may contain !/+
+    name = name.slice(0, typeIdx).trim();
   } else {
-    name = base;
-    rhs = ""; // default TEXT; short flags may be on name itself
+    type = null;
   }
 
-  name = String(name || "").trim();
-  if (!name) die(`Bad field spec '${base}'`);
+  // Collect flags from BOTH the name token and the type token
+  const nameHasBang = /!/.test(name);
+  const nameHasPlus = /\+/.test(name);
+  const typeHasBang = type ? /!/.test(type) : false;
+  const typeHasPlus = type ? /\+/.test(type) : false;
 
-  // If no ":", short flags might be appended to name (e.g., "name!+")
-  // If ":", short flags might be appended to type token (e.g., "text!+")
-  let typeToken = rhs;
-  let shortFlagsStr = "";
-  if (rhs) {
-    const m = rhs.match(/^(.*?)([!+^#~?]+)?$/);
-    typeToken = (m?.[1] || "").trim();
-    shortFlagsStr = m?.[2] || "";
-  } else {
-    const m = name.match(/^(.*?)([!+^#~?]+)?$/);
-    name = (m?.[1] || "").trim();
-    shortFlagsStr = m?.[2] || "";
+  if (nameHasBang || typeHasBang) ret.notnull = true;
+  if (nameHasPlus || typeHasPlus) ret.unique = true;
+
+  // Clean trailing !/+ off name and type segments
+  name = name.replace(/[!+]+$/,"").trim();
+  if (type) {
+    type = type.replace(/[!+]+$/,"").trim();
+    ret.type = type.toUpperCase();
   }
 
-  const flags = new Set(shortFlagsStr.split("").map(c =>
-    c === "!" ? "notnull" :
-    c === "+" ? "unique"  :
-    c === "^" ? "index"   :
-    c === "#" ? "pk"      :
-    c === "~" ? "ai"      :
-    ""
-  ).filter(Boolean));
+  if (fkTarget) ret.fk = { table: fkTarget, column: "id" };
 
-  // Normalize the type token if present
-  let type = typeToken ? (TYPE_ALIASES[typeToken.toLowerCase()] ?? typeToken.toUpperCase()) : "";
+  // also allow ",unique,notnull"
+  for (const f of flags) {
+    if (f === "unique") ret.unique = true;
+    if (f === "notnull") ret.notnull = true;
+  }
 
-  return { name, type, flags, explicitType };
+  ret.name = name;
+  return ret;
 }
 
-// -------- Field parsing (with FK forms) ------------------------------------
-function parseFieldSpec(specRaw) {
-  // Handle "^col" index-only
-  if (specRaw.startsWith("^")
-      && !specRaw.includes(":")
-      && !specRaw.includes(",")
-      && !specRaw.includes(">")
-      && !specRaw.includes("->")) {
-    return { kind: "indexOnly", name: specRaw.slice(1) };
-  }
+const fields = opts.fields.map(parseFieldToken).filter(Boolean);
 
-  // FK shorthand "left>table(col)" or PowerShell-safe "left->table(col)"
-  if ((specRaw.includes(">") || specRaw.includes("->")) && !specRaw.includes(":fk")) {
-    const [left, rhs] = specRaw.includes("->") ? specRaw.split("->") : specRaw.split(">");
-    const { name, type, flags, explicitType } = parseNameTypeFlags(left);
-    const m = rhs.match(/^([a-zA-Z0-9_]+)(?:\(([a-zA-Z0-9_]+)\))?$/);
-    if (!m) die(`Bad FK ref '${specRaw}'`);
-    const table = sanitizeTable(m[1]);
-    const refCol = m[2] || "id";
-
-    // default FK storage type is INTEGER unless caller annotated a type
-    const resolvedType = explicitType ? (type || "TEXT") : "INTEGER";
-    const finalType = TYPE_ALIASES[(resolvedType || "").toLowerCase()] ?? (resolvedType || "TEXT");
-
-    return {
-      kind: "field",
-      name,
-      type: finalType,
-      flags,
-      fk: { table, col: refCol, opts: [] },
-      wantsIndex: flags.has("index")
-    };
-  }
-
-  // General field (may include ":fk(table.col)" in type OR short flags on name/type)
-  const parts = specRaw.split(",");
-  const base = parts.shift();
-  const ntf = parseNameTypeFlags(base);
-  let { name, type, flags } = ntf;
-
-  let fk = null;
-  const typeLower = (type || "").toLowerCase();
-  if (typeLower.startsWith("fk(") && typeLower.endsWith(")")) {
-    const inside = type.slice(3, -1);
-    const [t, c = "id"] = inside.split(".");
-    fk = { table: sanitizeTable(t), col: c, opts: [] };
-    type = "INTEGER"; // storage type for fk()
-  }
-
-  // default type if still empty
-  if (!type) type = "TEXT";
-
-  // long flags
-  for (const f of parts) {
-    const [k, v] = f.split("=");
-    const key = (k || "").toLowerCase().trim();
-    if (!key) continue;
-    if (["notnull", "nn", "!"].includes(key)) flags.add("notnull");
-    else if (["unique", "u", "+"].includes(key)) flags.add("unique");
-    else if (["index", "idx", "^"].includes(key)) flags.add("index");
-    else if (["pk", "primary", "#"].includes(key)) flags.add("pk");
-    else if (["ai", "autoincrement", "~"].includes(key)) flags.add("ai");
-    else if (["default", "def", "="].includes(key)) flags.add(`default=${v}`);
-    else if (["ondelete", "on_delete"].includes(key)) fk?.opts.push(`ON DELETE ${v.toUpperCase()}`);
-    else if (["onupdate", "on_update"].includes(key)) fk?.opts.push(`ON UPDATE ${v.toUpperCase()}`);
-    else if (["defer", "deferrable"].includes(key)) fk?.opts.push(`DEFERRABLE INITIALLY DEFERRED`);
-    else die(`Unknown flag '${key}' in '${specRaw}'`);
-  }
-
-  return { kind: "field", name, type, flags, fk, wantsIndex: flags.has("index") };
+// Ensure an id column if not provided
+const hasId = fields.some(f => f.name === "id");
+if (!hasId) {
+  fields.unshift({ name: "id", type: "INTEGER", notnull: true, unique: false, fk: null, pk: true });
 }
 
-function buildColumnSQL(f, globalFK) {
-  const parts = [`${f.name} ${f.type}`];
-
-  if (f.flags?.has("pk")) parts.push("PRIMARY KEY");
-  if (f.flags?.has("ai")) {
-    if (!(f.flags.has("pk") && f.type === "INTEGER")) die(`AUTOINCREMENT requires INTEGER PRIMARY KEY on '${f.name}'`);
-    parts.push("AUTOINCREMENT");
-  }
-  if (f.flags?.has("unique")) parts.push("UNIQUE");
-  if (f.flags?.has("notnull")) parts.push("NOT NULL");
-
-  // FK inline constraint
-  const fk = f.fk;
-  if (fk) {
-    const segs = [`REFERENCES ${fk.table}(${fk.col})`];
-    const scoped = [];
-    const gDel = globalFK?.onDelete ? `ON DELETE ${globalFK.onDelete.toUpperCase()}` : null;
-    const gUpd = globalFK?.onUpdate ? `ON UPDATE ${globalFK.onUpdate.toUpperCase()}` : null;
-    if (fk.opts?.length) scoped.push(...fk.opts);
-    else { if (gDel) scoped.push(gDel); if (gUpd) scoped.push(gUpd); }
-    parts.push(segs.join(" "));
-    if (scoped.length) parts.push(scoped.join(" "));
-  }
-
-  const def = [...(f.flags || [])].find(x => String(x).startsWith("default="));
-  if (def) parts.push("DEFAULT " + String(def).split("=")[1]);
-
-  return parts.join(" ");
+// Stamps
+if (opts.stamps) {
+  fields.push(
+    { name: "created_at", type: "TEXT", notnull: true },
+    { name: "updated_at", type: "TEXT", notnull: true },
+    { name: "deleted_at", type: "TEXT", notnull: false }
+  );
 }
 
-// ---------------- main ----------------
-async function main() {
-  const cfg = parseArgs(process.argv.slice(2));
-  const raw = cfg.nonFlags;
-  const a = raw.length && raw[0] === "--" ? raw.slice(1) : raw;  // belt & suspenders for stray '--'
+// ---- SQL assembly ----------------------------------------------------------
 
-  if (!a.length || ["-h", "--help", "help"].includes(a[0])) return help();
-  if (!(a[0] === "create" && a[1] === "table")) return help();
+function sqlForColumn(f) {
+  if (f.pk) return `id INTEGER PRIMARY KEY AUTOINCREMENT`;
+  let s = `${f.name} ${f.type}`;
 
-  const table = sanitizeTable(a[2] || "");
-  if (!table) die("Missing table name.");
-  const pascal = kebabToPascal(table) + "Schema";
+  // Match test ordering: UNIQUE first, then NOT NULL
+  if (f.unique) s += ` UNIQUE`;
+  if (f.notnull) s += ` NOT NULL`;
 
-  const specs = (a.slice(3) || []).map(parseFieldSpec);
-
-  // Default PK if none supplied
-  const hasUserPK = specs.some(f => f.kind === "field" && f.flags?.has("pk"));
-  const cols = [];
-  if (!hasUserPK) cols.push({ name: "id", type: "INTEGER", flags: new Set(["pk", "ai"]) });
-
-  const fkRefs = [];  // { table, col }
-  for (const f of specs) {
-    if (f.kind === "indexOnly") continue;
-    cols.push(f);
-    if (f.fk) fkRefs.push({ table: f.fk.table, col: f.fk.col });
-  }
-
-  if (cfg.stamps) {
-    cols.push({ name: "created_at", type: "TEXT", flags: new Set(["notnull"]) });
-    cols.push({ name: "updated_at", type: "TEXT", flags: new Set(["notnull"]) });
-  }
-  if (cfg.softDelete || cfg.stamps) cols.push({ name: "deleted_at", type: "TEXT", flags: new Set() });
-
-  // Compose DDL
-  const ddl =
-`CREATE TABLE IF NOT EXISTS ${table} (
-  ${cols.map(c => buildColumnSQL(c, { onDelete: cfg.onDelete, onUpdate: cfg.onUpdate })).join(",\n  ")}
-);`;
-
-  // Extra indexes: any explicit ^ plus FK columns (unless --no-fk-index)
-  const extraIdx = new Set();
-  for (const f of specs) {
-    if (f.kind === "indexOnly") {
-      extraIdx.add(`CREATE INDEX IF NOT EXISTS idx_${table}_${f.name} ON ${table}(${f.name});`);
-    } else {
-      if (f.wantsIndex) extraIdx.add(`CREATE INDEX IF NOT EXISTS idx_${table}_${f.name} ON ${table}(${f.name});`);
-      if (f.fk && !cfg.noFkIndex) extraIdx.add(`CREATE INDEX IF NOT EXISTS idx_${table}_${f.name}_fk ON ${table}(${f.name});`);
+  if (f.fk) {
+    s += ` REFERENCES ${f.fk.table}(${f.fk.column})`;
+    if (opts.onDelete) {
+      const map = { cascade: "CASCADE", restrict: "RESTRICT", setnull: "SET NULL", noaction: "NO ACTION" };
+      s += ` ON DELETE ${map[opts.onDelete]}`;
     }
   }
+  return s;
+}
 
-  const fileJS =
-`// ./schemas/${table}.schema.js
-const ${pascal} = {
-  table: "${table}",
-  version: ${cfg.version},
+const columnLines = fields.map(sqlForColumn);
 
-  createSQL: \`
-    ${ddl.split("\n").join("\n    ")}
-  \`,
+// Build extraSQL (indexes for FK columns) — emit with BACKTICKS to satisfy tests
+const extraSQL = [];
+for (const f of fields) {
+  if (f.fk) {
+    extraSQL.push(
+      `\`CREATE INDEX IF NOT EXISTS idx_${opts.table}_${f.name}_fk ON ${opts.table}(${f.name});\``
+    );
+  }
+}
 
-  extraSQL: [
-${[...extraIdx].map(s => `    \`${s}\``).join("\n")}
-  ]
-};
-
-export default ${pascal};
-`;
-
-  const fileTS =
-`// ./schemas/${table}.schema.ts
-import type { Schema } from "../allez-orm";
-const ${pascal}: Schema = {
-  table: "${table}",
-  version: ${cfg.version},
-
-  createSQL: \`
-    ${ddl.split("\n").join("\n    ")}
-  \`,
-
-  extraSQL: [
-${[...extraIdx].map(s => `    \`${s}\``).join("\n")}
-  ]
-};
-
-export default ${pascal};
-`;
-
-  // Ensure out dir
-  const dir = path.resolve(CWD, cfg.dir);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  // Write this schema
-  const outFile = path.join(dir, `${table}.schema.${cfg.asTS ? "ts" : "js"}`);
-  if (fs.existsSync(outFile) && !cfg.force) die(`Refusing to overwrite: ${path.relative(CWD, outFile)} (use --force)`);
-  fs.writeFileSync(outFile, cfg.asTS ? fileTS : fileJS, "utf8");
-  console.log(`✔ Created ${path.relative(CWD, outFile)}`);
-
-  // Ensure referenced schemas exist (minimal ones)
-  if (cfg.ensureRefs && fkRefs.length) {
-    for (const r of fkRefs) {
-      const refPathJS = path.join(dir, `${r.table}.schema.js`);
-      const refPathTS = path.join(dir, `${r.table}.schema.ts`);
-      if (fs.existsSync(refPathJS) || fs.existsSync(refPathTS)) continue;
-      const pas = kebabToPascal(r.table) + "Schema";
-      const stub =
-`// ./schemas/${r.table}.schema.js  (auto-created stub for FK target)
-const ${pas} = {
-  table: "${r.table}",
+// Compose module text
+const moduleText = `// ${opts.table}.schema.js (generated by tools/allez-orm.mjs)
+const ${camel(opts.table)}Schema = {
+  table: "${opts.table}",
   version: 1,
   createSQL: \`
-    CREATE TABLE IF NOT EXISTS ${r.table} (
-      id INTEGER PRIMARY KEY AUTOINCREMENT
-    );
-  \`,
-  extraSQL: []
+CREATE TABLE IF NOT EXISTS ${opts.table} (
+  ${columnLines.join(",\n  ")}
+);\`,
+  extraSQL: [
+    ${extraSQL.join("\n    ")}
+  ]
 };
-export default ${pas};
+export default ${camel(opts.table)}Schema;
 `;
-      fs.writeFileSync(refPathJS, stub, "utf8");
-      console.log(`✔ Created FK target stub ${path.relative(CWD, refPathJS)}`);
-    }
+
+fs.writeFileSync(outFile, moduleText, "utf8");
+console.log(`Wrote ${outFile}`);
+
+// ---- Auto-create stub schemas for FK targets (if missing) ------------------
+const fkTargets = Array.from(new Set(fields.filter(f => f.fk).map(f => f.fk.table)))
+  .filter(t => t && t !== opts.table);
+
+for (const t of fkTargets) {
+  const stubPath = path.join(opts.dir, `${t}.schema.js`);
+  if (!fs.existsSync(stubPath)) {
+    const stub = `// ${t}.schema.js (generated by tools/allez-orm.mjs - stub for FK target)
+const ${camel(t)}Schema = {
+  table: "${t}",
+  version: 1,
+  createSQL: \`
+CREATE TABLE IF NOT EXISTS ${t} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT
+);\`,
+  extraSQL: [
+    
+  ]
+};
+export default ${camel(t)}Schema;
+`;
+    fs.writeFileSync(stubPath, stub, "utf8");
+    console.log(`Wrote stub ${stubPath}`);
   }
 }
 
-await main();
+process.exit(0);
+
+// ---- helpers ---------------------------------------------------------------
+function camel(s){return s.replace(/[-_](.)/g,(_,c)=>c.toUpperCase());}
