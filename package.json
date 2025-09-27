@@ -1,6 +1,6 @@
 {
   "name": "allez-orm",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "description": "AllezORM: lightweight browser SQLite ORM (sql.js) + schema generator CLI",
   "type": "module",
   "bin": {
@@ -34,9 +34,6 @@
     "test:cli": "node tests/test-cli.mjs",
     "ddl:audit": "node tools/ddl-audit.mjs",
     "prepublishOnly": "node tests/test-cli.mjs && node tools/ddl-audit.mjs"
-  },
-  "bin": {
-    "allez-orm": "tools/allez-orm.mjs"
   },
   "files": [
     "allez-orm.mjs",
