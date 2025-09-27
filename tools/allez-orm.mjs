@@ -15,9 +15,9 @@
  *  - --print-json-schema: output the JSON Schema used for validation
  *
  * Usage:
- *   node tools/allez-orm.mjs create table <name> [fields...] [--dir=schemas_cli] [--stamps] [-f|--force] [--onDelete=cascade|restrict|setnull|noaction]
- *   node tools/allez-orm.mjs from-json <config.json> [--dir=schemas_cli] [-f|--force]
- *   node tools/allez-orm.mjs --print-json-schema
+ *   allez-orm create table <name> [fields...] [--dir=schemas_cli] [--stamps] [-f|--force] [--onDelete=cascade|restrict|setnull|noaction]
+ *   allez-orm from-json <config.json> [--dir=schemas_cli] [-f|--force]
+ *   allez-orm --print-json-schema
  */
 
 import fs from "node:fs";
@@ -130,7 +130,7 @@ const CONFIG_JSON_SCHEMA = JSON.stringify({
               required: ["name"],
               properties: {
                 name: { type: "string" },
-                type: { type: "string" },           // TEXT (default), INTEGER, etc
+                type: { type: "string" },
                 unique: { type: "boolean" },
                 notnull: { type: "boolean" },
                 fk: {
@@ -351,7 +351,12 @@ function parseFieldToken(tok) {
 
 function camel(s){return s.replace(/[-_](.)/g,(_,c)=>c.toUpperCase());}
 
-// ---------------- from-json implementation ----------------
+// ---------------- from-json implementation (resilient) ----------------
+
+function pick(obj, ...keys) {
+  for (const k of keys) { if (obj && obj[k] !== undefined) return obj[k]; }
+  return undefined;
+}
 
 async function runFromJson(cliOpts) {
   const file = path.resolve(cliOpts.jsonFile);
@@ -361,38 +366,62 @@ async function runFromJson(cliOpts) {
   let cfg;
   try { cfg = JSON.parse(raw); } catch (e) { die(`Invalid JSON: ${e.message}`); }
 
-  // light validation against our schema
-  // (kept minimal to avoid bundling a validator)
-  if (!cfg || !Array.isArray(cfg.tables)) die(`Config must have a "tables" array.`);
+  // allow OutDir/DefaultOnDelete/Tables
+  const outDir = cliOpts.dir || pick(cfg, "outDir", "OutDir") || "schemas_cli";
+  const defaultOnDelete = pick(cfg, "defaultOnDelete", "DefaultOnDelete") ?? null;
 
-  const outDir = cliOpts.dir || cfg.outDir || "schemas_cli";
-  const defaultOnDelete = cfg.defaultOnDelete ?? null;
+  const tables = pick(cfg, "tables", "Tables");
+  if (!Array.isArray(tables)) {
+    die(`Config must have an array at "tables" (or "Tables").`);
+  }
 
   fs.mkdirSync(outDir, { recursive: true });
 
-  for (const t of cfg.tables) {
-    if (!t || !t.name || !Array.isArray(t.fields)) {
-      die(`Each table requires { name, fields[] }`);
+  for (let ti = 0; ti < tables.length; ti++) {
+    const tRaw = tables[ti] || {};
+    const tName = pick(tRaw, "name", "Name");
+    if (!tName || typeof tName !== "string") {
+      die(`Table at index ${ti} is missing "name".`);
     }
-    // convert config fields -> tokens for existing generator
-    const tokens = [];
-    for (const f of t.fields) {
-      let token = f.name;
-      const type = (f.type || "TEXT").toLowerCase();
+    const tStamps = !!pick(tRaw, "stamps", "Stamps");
 
-      token += `:${type}`;
-      if (f.notnull) token += `!`;
-      if (f.unique) token += `+`;
-      if (f.fk && f.fk.table) {
-        token += `->${f.fk.table}`;
+    // accept fields/Fields OR columns/Columns
+    let fieldsList = pick(tRaw, "fields", "Fields", "columns", "Columns");
+    if (!Array.isArray(fieldsList)) {
+      die(`Table "${tName}" must have "fields" (or "Fields"/"columns"/"Columns") array.`);
+    }
+
+    const tokens = [];
+    for (let fi = 0; fi < fieldsList.length; fi++) {
+      const f = fieldsList[fi] || {};
+      const name = pick(f, "name", "Name");
+      if (!name || typeof name !== "string") {
+        die(`Table "${tName}" field #${fi} is missing "name".`);
       }
+      const typeRaw = pick(f, "type", "Type");
+      const type = (typeRaw ? String(typeRaw) : "TEXT").toLowerCase();
+
+      const unique = !!pick(f, "unique", "Unique");
+      // support notnull, notNull, NotNull
+      const notnull = !!pick(f, "notnull", "notNull", "NotNull");
+
+      // FK variations: fk/FK with table/Table, column/Column
+      const fkRaw = pick(f, "fk", "FK");
+      const fkTable = fkRaw ? pick(fkRaw, "table", "Table") : undefined;
+      const fkCol = fkRaw ? (pick(fkRaw, "column", "Column") || "id") : undefined;
+
+      let token = name + `:${type}`;
+      if (notnull) token += `!`;
+      if (unique) token += `+`;
+      if (fkTable) token += `->` + fkTable;
+
       tokens.push(token);
     }
 
     await generateOne({
       outDir,
-      name: t.name,
-      stamps: !!t.stamps,
+      name: tName,
+      stamps: tStamps,
       onDelete: defaultOnDelete || null,
       force: cliOpts.force,
       fieldTokens: tokens
