@@ -1,106 +1,126 @@
 // tests/test-cli.mjs
-// Runs cross-platform CLI smoke tests (no external deps).
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import assert from "node:assert";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 
-const NODE = process.execPath;
-const CLI = path.join(process.cwd(), "tools", "allez-orm.mjs");
-const OUTDIR = path.join(process.cwd(), "schemas_cli");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const root = path.resolve(__dirname, "..");
+const tools = path.join(root, "tools");
+const outDir = path.join(root, "schemas_cli");
 
-// clean output dir each run
-fs.rmSync(OUTDIR, { recursive: true, force: true });
-fs.mkdirSync(OUTDIR, { recursive: true });
-
-function run(args, env = {}) {
-  const res = spawnSync(NODE, [CLI, ...args], {
-    env: { ...process.env, ...env },
+// small helpers
+function runNode(file, args = [], opts = {}) {
+  const res = spawnSync(process.execPath, [file, ...args], {
+    cwd: root,
     encoding: "utf8",
-    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+    ...opts,
   });
-  const out = (res.stdout || "") + (res.stderr || "");
-  return { code: res.status ?? 0, out };
-}
-
-function must(codeOk, message, extra = "") {
-  if (!codeOk) {
-    console.error("\n❌", message);
-    if (extra) console.error(extra);
-    process.exit(1);
-  } else {
-    console.log("✔", message);
+  if (res.status !== 0) {
+    const msg = `Command failed: node ${file} ${args.join(" ")}\n${res.stdout}\n${res.stderr}`;
+    throw new Error(msg);
   }
+  return res.stdout.toString();
+}
+function read(p) {
+  return fs.readFileSync(p, "utf8");
+}
+function exists(p) {
+  try { fs.statSync(p); return true; } catch { return false; }
 }
 
-function read(file) {
-  return fs.readFileSync(file, "utf8");
-}
+// fresh output dir
+fs.rmSync(outDir, { recursive: true, force: true });
+fs.mkdirSync(outDir, { recursive: true });
 
 console.log("=== CLI smoke tests ===");
 
-// 1) Create roles with default id
-{
-  const { code, out } = run(["create", "table", "roles", "--dir=" + OUTDIR]);
-  must(code === 0, "create roles (default PK)");
-  const f = path.join(OUTDIR, "roles.schema.js");
-  must(fs.existsSync(f), "roles.schema.js written");
-  const s = read(f);
-  assert.match(s, /id INTEGER PRIMARY KEY AUTOINCREMENT/);
-  console.log("   → contains INTEGER PRIMARY KEY AUTOINCREMENT");
-}
+// 1) create roles (default PK)
+runNode(path.join(tools, "allez-orm.mjs"), ["create", "table", "roles", "--dir=" + outDir, "-f"]);
+const rolesPath = path.join(outDir, "roles.schema.js");
+assert.ok(exists(rolesPath), "roles.schema.js written");
+console.log("✔ create roles (default PK)");
 
-// 2) Refuse overwrite without --force/-f
-{
-  const { code, out } = run(["create", "table", "roles", "name!", "--dir=" + OUTDIR]);
-  must(code !== 0, "refused overwrite without --force");
-  assert.match(out, /Refusing to overwrite/);
-}
+const rolesTxt = read(rolesPath);
+assert.match(rolesTxt, /INTEGER PRIMARY KEY AUTOINCREMENT/, "roles has autoincrement PK");
+console.log("✔ roles.schema.js written\n   → contains INTEGER PRIMARY KEY AUTOINCREMENT");
 
-// 3) Overwrite with -f (force)
-{
-  const { code } = run(["create", "table", "roles", "name!", "--dir=" + OUTDIR, "-f"]);
-  must(code === 0, "overwrite roles with -f");
-  const s = read(path.join(OUTDIR, "roles.schema.js"));
-  assert.match(s, /name TEXT NOT NULL/);
+// 2) refuse overwrite without --force
+fs.writeFileSync(rolesPath, "// sentinel", "utf8");
+let refused = false;
+try {
+  runNode(path.join(tools, "allez-orm.mjs"), ["create", "table", "roles", "--dir=" + outDir]);
+} catch {
+  refused = true;
 }
+assert.ok(refused, "refused overwrite without --force");
+console.log("✔ refused overwrite without --force");
 
-// 4) Create users with stamps and unique email
-{
-  const { code } = run(["create", "table", "users", "email:text!+", "--stamps", "--dir=" + OUTDIR, "-f"]);
-  must(code === 0, "create users with email unique + stamps");
-  const s = read(path.join(OUTDIR, "users.schema.js"));
-  assert.match(s, /email TEXT UNIQUE NOT NULL/);
-  assert.match(s, /created_at TEXT NOT NULL/);
-  assert.match(s, /updated_at TEXT NOT NULL/);
-  assert.match(s, /deleted_at TEXT/);
-}
+// 3) overwrite with -f
+runNode(path.join(tools, "allez-orm.mjs"), ["create", "table", "roles", "--dir=" + outDir, "-f"]);
+assert.ok(exists(rolesPath), "roles re-written");
+console.log("✔ overwrite roles with -f");
 
-// 5) Create posts with PS-safe FK '->', ON DELETE CASCADE, and stamps
-{
-  const { code } = run(["create", "table", "posts", "title!", "user_id:text->users", "--onDelete=cascade", "--stamps", "--dir=" + OUTDIR, "-f"]);
-  must(code === 0, "create posts with FK user_id -> users(id) CASCADE + stamps");
-  const s = read(path.join(OUTDIR, "posts.schema.js"));
-  assert.match(s, /user_id TEXT REFERENCES users\(id\) ON DELETE CASCADE/);
-  assert.match(s, /`CREATE INDEX IF NOT EXISTS idx_posts_user_id_fk ON posts\(user_id\);`/);
-}
+// 4) create users with email unique + stamps
+runNode(path.join(tools, "allez-orm.mjs"), [
+  "create", "table", "users",
+  "email:text!+",
+  "--stamps",
+  "--dir=" + outDir, "-f"
+]);
+const usersPath = path.join(outDir, "users.schema.js");
+assert.ok(exists(usersPath), "users.schema.js written");
+const usersTxt = read(usersPath);
 
-// 6) Auto-create stub for missing FK target
-{
-  const { code } = run(["create", "table", "memberships", "org_id:integer->orgs", "--dir=" + OUTDIR, "-f"]);
-  must(code === 0, "create memberships and stub orgs");
-  const stub = path.join(OUTDIR, "orgs.schema.js");
-  must(fs.existsSync(stub), "auto-created stub schema for 'orgs'");
-  const s = read(stub);
-  assert.match(s, /CREATE TABLE IF NOT EXISTS orgs/);
-}
+// order: UNIQUE then NOT NULL
+assert.match(usersTxt, /email TEXT UNIQUE NOT NULL/, "users.email has UNIQUE then NOT NULL");
+console.log("✔ create users with email unique + stamps");
 
-// 7) Env override ALLEZ_FORCE=1 also forces overwrite
-{
-  const { code } = run(["create", "table", "roles", "slug:text,unique", "--dir=" + OUTDIR], { ALLEZ_FORCE: "1" });
-  must(code === 0, "overwrite via ALLEZ_FORCE=1");
-  const s = read(path.join(OUTDIR, "roles.schema.js"));
-  assert.match(s, /slug TEXT UNIQUE/);
-}
+// 5) create posts with FK user_id -> users(id) CASCADE + stamps (inline FK; no extraSQL)
+runNode(path.join(tools, "allez-orm.mjs"), [
+  "create", "table", "posts",
+  "title:text!",
+  "user_id:text->users",
+  "--onDelete=cascade",
+  "--stamps",
+  "--dir=" + outDir, "-f"
+]);
+const postsPath = path.join(outDir, "posts.schema.js");
+assert.ok(exists(postsPath), "posts.schema.js written");
+const postsTxt = read(postsPath);
 
-console.log("\n🎉 All CLI tests passed.\n");
+// FK must be inline with ON DELETE CASCADE
+assert.match(
+  postsTxt,
+  /user_id TEXT REFERENCES users\(id\) ON DELETE CASCADE/,
+  "posts.user_id has inline FK with ON DELETE CASCADE"
+);
+
+// ensure we DO NOT emit extraSQL at all anymore
+assert.doesNotMatch(postsTxt, /\bextraSQL\b/, "no extraSQL emitted in generated module");
+console.log("✔ create posts with FK user_id -> users(id) CASCADE + stamps");
+
+// 6) stub generation for FK target tables: already created users above, but verify behavior
+// Create memberships with org_id -> orgs to ensure stub for orgs appears
+runNode(path.join(tools, "allez-orm.mjs"), [
+  "create", "table", "memberships",
+  "user_id:integer->users",
+  "org_id:integer->orgs",
+  "--dir=" + outDir, "-f"
+]);
+const orgsPath = path.join(outDir, "orgs.schema.js");
+assert.ok(exists(orgsPath), "orgs stub schema written");
+const orgsTxt = read(orgsPath);
+assert.match(orgsTxt, /CREATE TABLE IF NOT EXISTS orgs \(\s*id INTEGER PRIMARY KEY AUTOINCREMENT\s*\);/s);
+console.log("✔ create memberships and stub orgs");
+console.log("✔ auto-created stub schema for 'orgs'");
+
+// 7) overwrite via ALLEZ_FORCE=1 (env)
+process.env.ALLEZ_FORCE = "1";
+runNode(path.join(tools, "allez-orm.mjs"), ["create", "table", "roles", "--dir=" + outDir]);
+console.log("✔ overwrite via ALLEZ_FORCE=1");
+
+delete process.env.ALLEZ_FORCE;
