@@ -27,6 +27,23 @@ const DEFAULT_DB_NAME = "allez.db";
 const DEFAULT_AUTOSAVE_MS = 1500;
 const isBrowser = typeof window !== "undefined";
 
+// -------- identifier safety --------
+const SAFE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Validate and quote a SQL identifier (table or column name). */
+function safeIdent(name) {
+  if (typeof name !== "string" || !name) {
+    throw new Error(`Invalid SQL identifier: ${JSON.stringify(name)}`);
+  }
+  if (!SAFE_IDENT_RE.test(name)) {
+    throw new Error(
+      `Unsafe SQL identifier rejected: ${JSON.stringify(name)}. ` +
+      `Identifiers must match /^[A-Za-z_][A-Za-z0-9_]*$/.`
+    );
+  }
+  return `"${name}"`;
+}
+
 // -------- sql.js loader (browser-safe, no node core deps) --------
 async function loadSqlJs(opts = {}) {
   // 1) If user included <script src="https://sql.js.org/dist/sql-wasm.js">, use it.
@@ -141,54 +158,56 @@ export class AllezORM {
 
   table(table) {
     const self = this;
+    const t = safeIdent(table);
     return {
       async insert(obj) {
         const cols = Object.keys(obj);
+        const safeCols = cols.map(c => safeIdent(c));
         const qs = cols.map(() => "?").join(",");
         await self.execute(
-          `INSERT INTO ${table} (${cols.join(",")}) VALUES (${qs})`,
+          `INSERT INTO ${t} (${safeCols.join(",")}) VALUES (${qs})`,
           cols.map(c => obj[c])
         );
       },
       async upsert(obj) {
         const cols = Object.keys(obj);
+        const safeCols = cols.map(c => safeIdent(c));
         const qs = cols.map(() => "?").join(",");
-        const updates = cols.map(c => `${c}=excluded.${c}`).join(",");
+        const updates = safeCols.map(c => `${c}=excluded.${c}`).join(",");
         await self.execute(
-          `INSERT INTO ${table} (${cols.join(",")}) VALUES (${qs})
-           ON CONFLICT(id) DO UPDATE SET ${updates}`,
+          `INSERT INTO ${t} (${safeCols.join(",")}) VALUES (${qs})
+           ON CONFLICT("id") DO UPDATE SET ${updates}`,
           cols.map(c => obj[c])
         );
       },
       async update(id, patch) {
         const cols = Object.keys(patch);
         if (!cols.length) return;
-        const assigns = cols.map(c => `${c}=?`).join(",");
+        const assigns = cols.map(c => `${safeIdent(c)}=?`).join(",");
         await self.execute(
-          `UPDATE ${table} SET ${assigns} WHERE id=?`,
+          `UPDATE ${t} SET ${assigns} WHERE "id"=?`,
           [...cols.map(c => patch[c]), id]
         );
       },
       async deleteSoft(id, ts = new Date().toISOString()) {
-        // keep naming consistent across projects
         try {
-          await self.execute(`UPDATE ${table} SET deletedAt=? WHERE id=?`, [ts, id]);
+          await self.execute(`UPDATE ${t} SET "deletedAt"=? WHERE "id"=?`, [ts, id]);
         } catch {
-          await self.execute(`UPDATE ${table} SET deleted_at=? WHERE id=?`, [ts, id]);
+          await self.execute(`UPDATE ${t} SET "deleted_at"=? WHERE "id"=?`, [ts, id]);
         }
       },
       async remove(id) {
-        await self.execute(`DELETE FROM ${table} WHERE id=?`, [id]);
+        await self.execute(`DELETE FROM ${t} WHERE "id"=?`, [id]);
       },
       async findById(id) {
-        return await self.get(`SELECT * FROM ${table} WHERE id=?`, [id]);
+        return await self.get(`SELECT * FROM ${t} WHERE "id"=?`, [id]);
       },
       async searchLike(q, columns, limit = 50) {
         if (!columns?.length) return [];
-        const where = columns.map(c => `${table}.${c} LIKE ?`).join(" OR ");
+        const where = columns.map(c => `${t}.${safeIdent(c)} LIKE ?`).join(" OR ");
         const params = columns.map(() => `%${q}%`);
         return await self.query(
-          `SELECT * FROM ${table} WHERE (${where}) LIMIT ?`,
+          `SELECT * FROM ${t} WHERE (${where}) LIMIT ?`,
           [...params, limit]
         );
       }
@@ -380,6 +399,9 @@ export async function exec(db, sql, params = []) {
   }
   await db.execute(sql, params);
 }
+
+// Expose safeIdent for consumers who build custom SQL.
+export { safeIdent };
 
 // Keep a default export for advanced consumers.
 export default AllezORM;

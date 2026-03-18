@@ -18,6 +18,13 @@ export interface InitOptions {
 
 export type Row = Record<string, any>;
 
+/**
+ * Validate and double-quote a SQL identifier (table or column name).
+ * Throws if the name contains unsafe characters.
+ * Valid pattern: /^[A-Za-z_][A-Za-z0-9_]*$/
+ */
+export function safeIdent(name: string): string;
+
 export interface TableHelper<T extends Row = Row> {
   insert(obj: Partial<T>): Promise<void>;
   upsert(obj: Partial<T>): Promise<void>;
