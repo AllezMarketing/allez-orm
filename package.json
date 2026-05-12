@@ -1,6 +1,6 @@
 {
   "name": "allez-orm",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "AllezORM: lightweight browser SQLite ORM (sql.js) + schema generator CLI",
   "type": "module",
   "bin": {
@@ -34,8 +34,13 @@
     "test:cli": "node tests/test-cli.mjs",
     "ddl:audit": "node tools/ddl-audit.mjs",
     "test:security": "node tests/test-security.mjs",
-    "test": "node tests/test-cli.mjs && node tests/test-security.mjs && node tools/ddl-audit.mjs",
-    "prepublishOnly": "node tests/test-cli.mjs && node tests/test-security.mjs && node tools/ddl-audit.mjs"
+    "test:anchor": "node tests/test-spec-anchor.mjs",
+    "test:thorough": "node tests/test-generator-thorough.mjs",
+    "test:fk": "node tests/test-fk-persistence.mjs",
+    "test:e2e": "node tests/test-e2e-studio.mjs",
+    "test": "node tests/test-cli.mjs && node tests/test-security.mjs && node tests/test-spec-anchor.mjs && node tests/test-generator-thorough.mjs && node tests/test-fk-persistence.mjs && node tools/ddl-audit.mjs",
+    "test:all": "npm test && npm run test:e2e",
+    "prepublishOnly": "node tests/test-cli.mjs && node tests/test-security.mjs && node tests/test-spec-anchor.mjs && node tests/test-generator-thorough.mjs && node tests/test-fk-persistence.mjs && node tools/ddl-audit.mjs"
   },
   "files": [
     "allez-orm.mjs",
@@ -68,6 +73,7 @@
     "sql.js": "^1.13.0"
   },
   "devDependencies": {
+    "playwright": "^1.60.0",
     "serve": "^14.2.5"
   },
   "engines": {

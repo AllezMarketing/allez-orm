@@ -282,6 +282,10 @@ export class AllezORM {
 
   async saveNow() {
     const data = this.db.export(); // Uint8Array
+    // sql.js's db.export() resets connection-scoped PRAGMAs (including
+    // foreign_keys) to 0. Re-enable FK enforcement so subsequent writes
+    // stay constraint-checked.
+    this.db.exec("PRAGMA foreign_keys = ON;");
     if (isBrowser) await idbSet(this.dbName, data);
   }
 
